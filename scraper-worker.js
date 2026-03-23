@@ -191,6 +191,8 @@ function formatItems(videoMap, username) {
         const cover = extractUrl(v.video?.cover) || extractUrl(v.video?.dynamicCover);
         const originCover = extractUrl(v.video?.originCover);
 
+        const proxyBase = '/api/proxy?url=';
+
         return {
             id: v.id,
             type: isImagePost ? 'image_diary' : 'video',
@@ -201,6 +203,8 @@ function formatItems(videoMap, username) {
             originCover,
             playUrl,
             downloadUrl,
+            proxyPlayUrl: playUrl ? `${proxyBase}${encodeURIComponent(playUrl)}` : '',
+            proxyDownloadUrl: downloadUrl ? `${proxyBase}${encodeURIComponent(downloadUrl)}` : '',
             images,
             music: v.music ? {
                 title: v.music.title,
