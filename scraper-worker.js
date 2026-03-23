@@ -70,15 +70,9 @@ async function getBrowser() {
 }
 
 async function scrapeVideos(username) {
-    // Thử External API trước (nhanh hơn, không cần browser)
-    const externalItems = await fetchFromExternalAPI(username);
-    if (externalItems && externalItems.length > 0) {
-        const videoMap = new Map();
-        externalItems.forEach(v => videoMap.set(v.id, v));
-        return { videos: formatItems(videoMap, username), cookies: '', source: 'external_api' };
-    }
-
-    console.log('  [Puppeteer] External API lỗi, dùng browser scraping...');
+    // Luôn dùng Puppeteer để lấy CẢ Videos tab (own) + Reposts tab
+    // External API chỉ trả về reposts, không có videos gốc
+    console.log('  [Puppeteer] Bắt đầu scrape cả 2 tab...');
     const browser = await getBrowser();
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
