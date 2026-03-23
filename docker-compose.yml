@@ -1,6 +1,8 @@
 services:
-  tiktok-api:
-    build: .
+  api-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
     container_name: tiktok-api
     restart: unless-stopped
     ports:
@@ -8,9 +10,21 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
-      - PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+      - INTERNAL_SECRET=tiktok-internal-2node
+
+  scraper-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.scraper
+    container_name: tiktok-scraper
+    restart: unless-stopped
+    depends_on:
+      - api-server
+    environment:
+      - NODE_ENV=production
+      - API_SERVER_URL=http://api-server:3000
+      - INTERNAL_SECRET=tiktok-internal-2node
       - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-    # Chromium needs these for headless in Docker
     security_opt:
-      - seccomp=unconfined
+      - seccomp:unconfined
     shm_size: "1gb"
