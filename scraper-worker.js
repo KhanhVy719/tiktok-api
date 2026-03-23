@@ -111,20 +111,34 @@ async function scrapeVideos(username) {
         timeout: 30000
     });
 
+    // Bỏ qua cookie banner
     try {
         const btn = await page.$('button[data-e2e="cookie-banner-accept"]');
         if (btn) await btn.click();
     } catch (e) { }
 
-    await new Promise(r => setTimeout(r, 5000));
-    console.log(`  Sau khi load: ${videoMap.size} items`);
+    // === 1. Tab VIDEOS (mặc định hoặc click) ===
+    try {
+        // Click "Videos" tab nếu có
+        const videoTab = await page.$('[data-e2e="user-post-tab"]');
+        if (videoTab) {
+            await videoTab.click();
+            console.log('  📹 Clicked tab Videos');
+            await new Promise(r => setTimeout(r, 3000));
+        }
+    } catch (e) { }
 
+    await new Promise(r => setTimeout(r, 5000));
+    console.log(`  Sau khi load Videos tab: ${videoMap.size} items`);
+
+    // Cuộn trang để load thêm videos
     for (let i = 0; i < 10; i++) {
         await page.evaluate(() => window.scrollBy(0, 500));
         await new Promise(r => setTimeout(r, 1500));
     }
-    console.log(`  Sau cuộn trang: ${videoMap.size} items`);
+    console.log(`  Sau cuộn Videos tab: ${videoMap.size} items`);
 
+    // Phân trang API cho Videos
     for (const [apiPath, state] of apiEndpoints) {
         if (!state.hasMore) continue;
         let { url: templateUrl, cursor } = state;
@@ -150,7 +164,54 @@ async function scrapeVideos(username) {
             }
         }
     }
-    console.log(`  Tổng cuối: ${videoMap.size} items`);
+
+    const videosCount = videoMap.size;
+    console.log(`  ✅ Videos tab: ${videosCount} items`);
+
+    // === 2. Tab REPOSTS ===
+    try {
+        const repostTab = await page.$('[data-e2e="user-repost-tab"]');
+        if (repostTab) {
+            await repostTab.click();
+            console.log('  🔄 Clicked tab Reposts');
+            await new Promise(r => setTimeout(r, 3000));
+
+            // Cuộn để load reposts
+            for (let i = 0; i < 5; i++) {
+                await page.evaluate(() => window.scrollBy(0, 500));
+                await new Promise(r => setTimeout(r, 1500));
+            }
+            console.log(`  Sau cuộn Reposts tab: ${videoMap.size} items (mới: ${videoMap.size - videosCount})`);
+
+            // Phân trang reposts
+            for (const [apiPath, state] of apiEndpoints) {
+                if (!state.hasMore || !apiPath.includes('repost')) continue;
+                let { url: templateUrl, cursor } = state;
+                for (let i = 0; i < 20; i++) {
+                    try {
+                        const nextUrl = templateUrl.replace(/cursor=\d+/, `cursor=${cursor}`);
+                        const moreData = await page.evaluate(async (fetchUrl) => {
+                            const r = await fetch(fetchUrl, { credentials: 'include' });
+                            return r.json();
+                        }, nextUrl);
+
+                        if (moreData.itemList && moreData.itemList.length > 0) {
+                            moreData.itemList.forEach(v => videoMap.set(v.id, v));
+                            console.log(`  [${apiPath}] repost cursor +${moreData.itemList.length} (tổng: ${videoMap.size})`);
+                        }
+                        if (!moreData.hasMore) break;
+                        cursor = moreData.cursor || '0';
+                    } catch (e) { break; }
+                }
+            }
+        } else {
+            console.log('  ℹ️ Không tìm thấy tab Reposts');
+        }
+    } catch (e) {
+        console.log('  ⚠️ Lỗi tab Reposts:', e.message);
+    }
+
+    console.log(`  📊 Tổng cuối: ${videoMap.size} items (videos: ${videosCount}, reposts: ${videoMap.size - videosCount})`);
 
     // Lưu cookies cho CDN proxy
     const cookies = await page.cookies();
