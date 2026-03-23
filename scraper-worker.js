@@ -117,16 +117,17 @@ async function scrapeVideos(username) {
         if (btn) await btn.click();
     } catch (e) { }
 
-    // === 1. Tab VIDEOS (mặc định hoặc click) ===
+    // === 1. Tab VIDEOS (click để chắc chắn) ===
     try {
-        // Click "Videos" tab nếu có
-        const videoTab = await page.$('[data-e2e="user-post-tab"]');
+        const videoTab = await page.$('p[data-e2e="videos-tab"]');
         if (videoTab) {
             await videoTab.click();
             console.log('  📹 Clicked tab Videos');
             await new Promise(r => setTimeout(r, 3000));
+        } else {
+            console.log('  ⚠️ Không tìm thấy tab Videos selector');
         }
-    } catch (e) { }
+    } catch (e) { console.log('  ⚠️ Lỗi click Videos tab:', e.message); }
 
     await new Promise(r => setTimeout(r, 5000));
     console.log(`  Sau khi load Videos tab: ${videoMap.size} items`);
@@ -170,7 +171,7 @@ async function scrapeVideos(username) {
 
     // === 2. Tab REPOSTS ===
     try {
-        const repostTab = await page.$('[data-e2e="user-repost-tab"]');
+        const repostTab = await page.$('p[data-e2e="repost-tab"]');
         if (repostTab) {
             await repostTab.click();
             console.log('  🔄 Clicked tab Reposts');
