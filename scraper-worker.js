@@ -83,7 +83,8 @@ async function scrapeVideos(username) {
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    const videoMap = new Map();
+    const ownVideos = new Map();  // từ /api/post/item_list/
+    const repostVideos = new Map(); // từ /api/repost/item_list/
     const apiEndpoints = new Map();
 
     page.on('response', async (response) => {
@@ -93,8 +94,13 @@ async function scrapeVideos(username) {
                 const apiPath = url.match(/\/api\/([^?]+)/)?.[1] || 'unknown';
                 const json = await response.json();
                 if (json.itemList && json.itemList.length > 0) {
-                    json.itemList.forEach(v => videoMap.set(v.id, v));
-                    console.log(`  [${apiPath}] +${json.itemList.length} (tổng: ${videoMap.size})`);
+                    const isRepost = apiPath.includes('repost');
+                    const targetMap = isRepost ? repostVideos : ownVideos;
+                    json.itemList.forEach(v => {
+                        v._source = isRepost ? 'repost' : 'own';
+                        targetMap.set(v.id, v);
+                    });
+                    console.log(`  [${apiPath}] +${json.itemList.length} (own: ${ownVideos.size}, reposts: ${repostVideos.size})`);
                 }
                 apiEndpoints.set(apiPath, {
                     url,
@@ -123,25 +129,24 @@ async function scrapeVideos(username) {
         if (videoTab) {
             await videoTab.click();
             console.log('  📹 Clicked tab Videos');
-            await new Promise(r => setTimeout(r, 3000));
         } else {
             console.log('  ⚠️ Không tìm thấy tab Videos selector');
         }
     } catch (e) { console.log('  ⚠️ Lỗi click Videos tab:', e.message); }
 
     await new Promise(r => setTimeout(r, 5000));
-    console.log(`  Sau khi load Videos tab: ${videoMap.size} items`);
+    console.log(`  Sau khi load Videos tab: own=${ownVideos.size}, reposts=${repostVideos.size}`);
 
     // Cuộn trang để load thêm videos
-    for (let i = 0; i < 10; i++) {
-        await page.evaluate(() => window.scrollBy(0, 500));
-        await new Promise(r => setTimeout(r, 1500));
+    for (let i = 0; i < 5; i++) {
+        await page.evaluate(() => window.scrollBy(0, 800));
+        await new Promise(r => setTimeout(r, 2000));
     }
-    console.log(`  Sau cuộn Videos tab: ${videoMap.size} items`);
+    console.log(`  Sau cuộn Videos tab: own=${ownVideos.size}, reposts=${repostVideos.size}`);
 
-    // Phân trang API cho Videos
+    // Phân trang cho post/item_list (own videos)
     for (const [apiPath, state] of apiEndpoints) {
-        if (!state.hasMore) continue;
+        if (!state.hasMore || apiPath.includes('repost')) continue;
         let { url: templateUrl, cursor } = state;
         console.log(`  Phân trang ${apiPath} (cursor=${cursor})...`);
 
@@ -154,8 +159,11 @@ async function scrapeVideos(username) {
                 }, nextUrl);
 
                 if (moreData.itemList && moreData.itemList.length > 0) {
-                    moreData.itemList.forEach(v => videoMap.set(v.id, v));
-                    console.log(`  [${apiPath}] cursor +${moreData.itemList.length} (tổng: ${videoMap.size})`);
+                    moreData.itemList.forEach(v => {
+                        v._source = 'own';
+                        ownVideos.set(v.id, v);
+                    });
+                    console.log(`  [${apiPath}] cursor +${moreData.itemList.length} (own total: ${ownVideos.size})`);
                 }
                 if (!moreData.hasMore) break;
                 cursor = moreData.cursor || '0';
@@ -166,8 +174,7 @@ async function scrapeVideos(username) {
         }
     }
 
-    const videosCount = videoMap.size;
-    console.log(`  ✅ Videos tab: ${videosCount} items`);
+    console.log(`  ✅ Videos tab xong: ${ownVideos.size} videos gốc`);
 
     // === 2. Tab REPOSTS ===
     try {
@@ -179,10 +186,10 @@ async function scrapeVideos(username) {
 
             // Cuộn để load reposts
             for (let i = 0; i < 5; i++) {
-                await page.evaluate(() => window.scrollBy(0, 500));
+                await page.evaluate(() => window.scrollBy(0, 800));
                 await new Promise(r => setTimeout(r, 1500));
             }
-            console.log(`  Sau cuộn Reposts tab: ${videoMap.size} items (mới: ${videoMap.size - videosCount})`);
+            console.log(`  Sau cuộn Reposts tab: own=${ownVideos.size}, reposts=${repostVideos.size}`);
 
             // Phân trang reposts
             for (const [apiPath, state] of apiEndpoints) {
@@ -197,8 +204,11 @@ async function scrapeVideos(username) {
                         }, nextUrl);
 
                         if (moreData.itemList && moreData.itemList.length > 0) {
-                            moreData.itemList.forEach(v => videoMap.set(v.id, v));
-                            console.log(`  [${apiPath}] repost cursor +${moreData.itemList.length} (tổng: ${videoMap.size})`);
+                            moreData.itemList.forEach(v => {
+                                v._source = 'repost';
+                                repostVideos.set(v.id, v);
+                            });
+                            console.log(`  [${apiPath}] repost cursor +${moreData.itemList.length} (repost total: ${repostVideos.size})`);
                         }
                         if (!moreData.hasMore) break;
                         cursor = moreData.cursor || '0';
@@ -212,7 +222,10 @@ async function scrapeVideos(username) {
         console.log('  ⚠️ Lỗi tab Reposts:', e.message);
     }
 
-    console.log(`  📊 Tổng cuối: ${videoMap.size} items (videos: ${videosCount}, reposts: ${videoMap.size - videosCount})`);
+    console.log(`  📊 Tổng cuối: own=${ownVideos.size}, reposts=${repostVideos.size}, total=${ownVideos.size + repostVideos.size}`);
+
+    // Gộp tất cả (own videos first, then reposts)
+    const allVideos = new Map([...ownVideos, ...repostVideos]);
 
     // Lưu cookies cho CDN proxy
     const cookies = await page.cookies();
@@ -222,7 +235,7 @@ async function scrapeVideos(username) {
     await page.close();
 
     return {
-        videos: formatItems(videoMap, username),
+        videos: formatItems(allVideos, username),
         cookies: cookieStr,
         source: 'puppeteer'
     };
