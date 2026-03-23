@@ -1,0 +1,16 @@
+services:
+  tiktok-api:
+    build: .
+    container_name: tiktok-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+    # Chromium needs these for headless in Docker
+    security_opt:
+      - seccomp=unconfined
+    shm_size: "1gb"
