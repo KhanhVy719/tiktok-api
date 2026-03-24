@@ -77,7 +77,7 @@ async function getBrowser() {
     return browserInstance;
 }
 
-async function scrapeVideos(username) {
+async function scrapeVideos(username, profileSecUid) {
     // Chỉ lấy videos gốc (own videos), bỏ reposts
     console.log('  [Puppeteer] Bắt đầu scrape videos gốc...');
     const browser = await getBrowser();
@@ -97,23 +97,44 @@ async function scrapeVideos(username) {
         if (url.includes('tiktok.com/api') && url.includes('/post/item_list') && !url.includes('repost')) {
             try {
                 const apiPath = url.match(/\/api\/([^?]+)/)?.[1] || 'unknown';
-                const json = await response.json();
-                if (json.itemList && json.itemList.length > 0) {
+                const text = await response.text();
+                let json;
+                try {
+                    json = JSON.parse(text);
+                } catch (parseErr) {
+                    // Truncated JSON — try to extract itemList from partial response
+                    console.log(`  ⚠️ Truncated JSON (${text.length} chars), attempting partial parse...`);
+                    const itemListMatch = text.match(/"itemList"\s*:\s*\[/);
+                    if (itemListMatch) {
+                        // Extract from itemList start to end, try adding brackets
+                        const start = text.indexOf('"itemList"');
+                        let partial = text.slice(start);
+                        // Try to find complete item objects using id pattern
+                        const idMatches = [...partial.matchAll(/"id"\s*:\s*"(\d+)"/g)];
+                        if (idMatches.length > 0) {
+                            console.log(`  📋 Found ${idMatches.length} item IDs in truncated response`);
+                        }
+                    }
+                    json = null;
+                }
+                if (json && json.itemList && json.itemList.length > 0) {
                     json.itemList.forEach(v => {
                         v._source = 'own';
                         ownVideos.set(v.id, v);
                     });
                     console.log(`  [${apiPath}] +${json.itemList.length} (own: ${ownVideos.size})`);
-                } else {
+                } else if (json) {
                     console.log(`  [${apiPath}] empty response (hasMore: ${json.hasMore}, cursor: ${json.cursor})`);
                 }
-                apiEndpoints.set(apiPath, {
-                    url,
-                    hasMore: !!json.hasMore,
-                    cursor: json.cursor || '0',
-                });
+                if (json) {
+                    apiEndpoints.set(apiPath, {
+                        url,
+                        hasMore: !!json.hasMore,
+                        cursor: json.cursor || '0',
+                    });
+                }
             } catch (e) {
-                console.log(`  ⚠️ API parse error: ${e.message}`);
+                console.log(`  ⚠️ API error: ${e.message}`);
             }
         }
     });
@@ -167,8 +188,14 @@ async function scrapeVideos(username) {
         });
         console.log('  🔍 SSR debug:', JSON.stringify(ssrDebug));
         secUid = ssrDebug.secUid || '';
-        if (secUid) console.log(`  🔑 secUid: ${secUid.slice(0, 30)}...`);
+        if (secUid) console.log(`  🔑 secUid (SSR): ${secUid.slice(0, 30)}...`);
     } catch (e) { console.log('  ⚠️ SSR error:', e.message); }
+
+    // Fallback secUid from profile if SSR failed
+    if (!secUid && profileSecUid) {
+        secUid = profileSecUid;
+        console.log(`  🔑 secUid (profile fallback): ${secUid.slice(0, 30)}...`);
+    }
 
     // Dùng in-page fetch gọi TikTok API nếu có secUid
     if (secUid) {
@@ -381,6 +408,7 @@ async function runScrape() {
             const r = result.result;
             profile = {
                 uid: r?.user?.uid,
+                secUid: r?.user?.secUid || '',
                 username: r?.user?.username || DEFAULT_USERNAME,
                 nickname: r?.user?.nickname,
                 avatar: r?.user?.avatarLarger,
@@ -403,7 +431,7 @@ async function runScrape() {
 
     // 2. Scrape videos
     try {
-        const result = await scrapeVideos(DEFAULT_USERNAME);
+        const result = await scrapeVideos(DEFAULT_USERNAME, profile?.secUid || '');
         videos = result.videos;
         cookies = result.cookies;
         console.log(`  ✅ Videos: ${videos.length} items (source: ${result.source})`);
