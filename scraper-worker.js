@@ -47,7 +47,7 @@ async function scrapeAttempt(username, profileSecUid, attemptNum) {
         // Response listener
         page.on('response', async (response) => {
             const url = response.url();
-            if (url.includes('tiktok.com/api') && url.includes('item_list') && !url.includes('repost')) {
+            if (url.includes('tiktok.com/api') && url.includes('item_list')) {
                 try {
                     const isRepostEndpoint = url.includes('repost');
                     const text = await response.text();
@@ -105,6 +105,38 @@ async function scrapeAttempt(username, profileSecUid, attemptNum) {
                 console.log('    ⚠️ TikTok shows "Something went wrong"');
             } else {
                 console.log('    ⚠️ Không có video nào từ post/item_list');
+            }
+        }
+
+        // Extra IDs — lấy thêm video cụ thể
+        const EXTRA_IDS = (process.env.EXTRA_VIDEO_IDS || '').split(',').filter(Boolean);
+        const missingIds = EXTRA_IDS.filter(id => !ownVideos.has(id));
+        if (missingIds.length > 0) {
+            console.log(`    🎯 Extra posts: ${missingIds.length}...`);
+            for (const postId of missingIds) {
+                try {
+                    let postData = null;
+                    for (const type of ['video', 'photo']) {
+                        await page.goto(`https://www.tiktok.com/@${username}/${type}/${postId}`, {
+                            waitUntil: 'networkidle2', timeout: 15000
+                        });
+                        await randomDelay(1500, 2500);
+                        postData = await page.evaluate(() => {
+                            try {
+                                const root = window.__UNIVERSAL_DATA_FOR_REHYDRATION__;
+                                const scope = root?.['__DEFAULT_SCOPE__'];
+                                const detail = scope?.['webapp.video-detail'];
+                                return detail?.itemInfo?.itemStruct || detail?.itemStruct || null;
+                            } catch { return null; }
+                        });
+                        if (postData) break;
+                    }
+                    if (postData) {
+                        postData._source = 'own';
+                        ownVideos.set(postId, postData);
+                        console.log(`      ✅ ${postId}`);
+                    }
+                } catch (e) { }
             }
         }
 
