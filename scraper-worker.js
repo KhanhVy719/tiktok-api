@@ -89,7 +89,7 @@ async function scrapeVideos(username) {
 
     page.on('response', async (response) => {
         const url = response.url();
-        if (url.includes('tiktok.com/api') && url.includes('item_list') && !url.includes('repost')) {
+        if (url.includes('tiktok.com/api') && url.includes('post/item_list')) {
             try {
                 const apiPath = url.match(/\/api\/([^?]+)/)?.[1] || 'unknown';
                 const json = await response.json();
