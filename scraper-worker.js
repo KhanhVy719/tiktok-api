@@ -361,6 +361,7 @@ function formatItems(videoMap, username) {
         return {
             id: v.id,
             type: isImagePost ? 'image_diary' : 'video',
+            source: v._source || 'unknown', // 'own' = video gốc, 'repost' = đăng lại
             desc: v.desc || '',
             createTime: v.createTime,
             duration: v.video?.duration || 0,
@@ -384,7 +385,12 @@ function formatItems(videoMap, username) {
                 shares: v.stats?.shareCount || 0,
                 bookmarks: v.stats?.collectCount || 0,
             },
-            url: `https://www.tiktok.com/@${username}/video/${v.id}`
+            author: v.author ? {
+                uniqueId: v.author.uniqueId || '',
+                nickname: v.author.nickname || '',
+                avatar: extractUrl(v.author.avatarThumb) || '',
+            } : null,
+            url: `https://www.tiktok.com/@${v.author?.uniqueId || username}/video/${v.id}`
         };
     });
 }
