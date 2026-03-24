@@ -1,5 +1,9 @@
 const express = require('express');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
+
+const CACHE_FILE = process.env.CACHE_FILE || '/data/cache.json';
 
 const app = express();
 app.use(cors());
@@ -18,6 +22,37 @@ const cache = {
 };
 
 let savedCookies = '';
+
+// Load cache từ file nếu có
+try {
+    if (fs.existsSync(CACHE_FILE)) {
+        const saved = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+        if (saved.profile) cache.profile = saved.profile;
+        if (saved.videos) cache.videos = saved.videos;
+        if (saved.cookies) savedCookies = saved.cookies;
+        cache.lastUpdated = saved.lastUpdated;
+        cache.updateCount = saved.updateCount || 0;
+        console.log(`📂 Loaded cache: ${cache.videos?.count || 0} videos, profile=${!!cache.profile}`);
+    }
+} catch (e) {
+    console.log('⚠️ Load cache error:', e.message);
+}
+
+function saveCache() {
+    try {
+        const dir = path.dirname(CACHE_FILE);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(CACHE_FILE, JSON.stringify({
+            profile: cache.profile,
+            videos: cache.videos,
+            cookies: savedCookies,
+            lastUpdated: cache.lastUpdated,
+            updateCount: cache.updateCount,
+        }));
+    } catch (e) {
+        console.log('⚠️ Save cache error:', e.message);
+    }
+}
 
 // === POST /internal/update — Node 2 đẩy data vào ===
 app.post('/internal/update', (req, res) => {
@@ -40,6 +75,7 @@ app.post('/internal/update', (req, res) => {
     cache.lastUpdated = new Date().toISOString();
     cache.updateCount++;
     cache.error = null;
+    saveCache();
 
     console.log(`✅ [Update] Nhận data từ worker: ${cache.videos?.count || 0} videos, profile=${!!cache.profile}`);
     res.json({ status: 'ok', lastUpdated: cache.lastUpdated, videoCount: cache.videos?.count || 0 });
