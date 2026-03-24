@@ -240,8 +240,8 @@ async function scrapeVideos(username, profileSecUid) {
         const result = await scrapeAttempt(username, profileSecUid, attempt);
         
         if (result.videos.size > 0) {
-            // Chỉ giữ video gốc (own), bỏ repost
-            const ownOnly = new Map([...result.videos].filter(([_, v]) => v._source === 'own'));
+            // Chỉ giữ video gốc (own), bỏ repost + nhật ký ảnh
+            const ownOnly = new Map([...result.videos].filter(([_, v]) => v._source === 'own' && !v.imagePost));
             console.log(`  📊 Tổng: ${result.videos.size} (own: ${ownOnly.size}, repost: ${result.videos.size - ownOnly.size}) — attempt ${attempt}`);
             if (ownOnly.size > 0) {
                 return {
