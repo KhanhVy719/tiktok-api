@@ -1,4 +1,4 @@
-﻿const puppeteer = require('puppeteer-extra');
+const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 const { StalkUser } = require('@tobyg74/tiktok-api-dl');
@@ -294,9 +294,13 @@ async function runScrape() {
         console.error(`  ❌ Videos lỗi: ${err.message}`);
     }
 
-    // 3. Đẩy sang Node 1
-    if (profile || videos.length > 0) {
+    // 3. Đẩy sang Node 1 (cookies luôn push, videos chỉ push khi có data)
+    if (videos.length > 0) {
         await pushToApiServer(profile, videos, cookies);
+    } else if (cookies) {
+        // Push cookies + profile mà không overwrite videos cũ
+        await pushToApiServer(profile, null, cookies);
+        console.log('  ℹ️ Push cookies/profile only (giữ videos cũ trên server)');
     } else {
         console.log('  ⚠️ Không có data mới, bỏ qua push');
     }
