@@ -25,6 +25,7 @@ services:
       - API_SERVER_URL=http://api-server:3000
       - INTERNAL_SECRET=tiktok-internal-2node
       - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+      - EXTRA_VIDEO_IDS=7619881771651419413,7604389730414906632
     security_opt:
       - seccomp:unconfined
     shm_size: "1gb"

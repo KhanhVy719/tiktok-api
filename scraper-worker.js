@@ -138,71 +138,98 @@ async function scrapeVideos(username) {
 
     await new Promise(r => setTimeout(r, 5000));
 
-    // Lấy secUid từ SSR data để dùng cho API call
+    // Lấy secUid từ SSR data + debug
     let secUid = '';
     try {
-        secUid = await page.evaluate(() => {
+        const ssrDebug = await page.evaluate(() => {
             try {
-                const data = window.__UNIVERSAL_DATA_FOR_REHYDRATION__?.['__DEFAULT_SCOPE__']?.['webapp.user-detail'];
-                return data?.userInfo?.user?.secUid || '';
-            } catch { return ''; }
+                const root = window.__UNIVERSAL_DATA_FOR_REHYDRATION__;
+                if (!root) return { error: 'no __UNIVERSAL_DATA_FOR_REHYDRATION__' };
+                const scope = root['__DEFAULT_SCOPE__'];
+                if (!scope) return { error: 'no __DEFAULT_SCOPE__', keys: Object.keys(root) };
+                const userDetail = scope['webapp.user-detail'];
+                if (!userDetail) return { error: 'no webapp.user-detail', keys: Object.keys(scope) };
+                const userInfo = userDetail.userInfo;
+                if (!userInfo) return { error: 'no userInfo', keys: Object.keys(userDetail) };
+                const user = userInfo.user;
+                if (!user) return { error: 'no user', keys: Object.keys(userInfo) };
+                return {
+                    secUid: user.secUid || '',
+                    uniqueId: user.uniqueId || '',
+                    userKeys: Object.keys(user).filter(k => k.toLowerCase().includes('uid') || k.toLowerCase().includes('sec')),
+                };
+            } catch (e) { return { error: e.message }; }
         });
+        console.log('  🔍 SSR debug:', JSON.stringify(ssrDebug));
+        secUid = ssrDebug.secUid || '';
         if (secUid) console.log(`  🔑 secUid: ${secUid.slice(0, 30)}...`);
-    } catch (e) {}
+    } catch (e) { console.log('  ⚠️ SSR error:', e.message); }
 
-    // Dùng in-page fetch để gọi trực tiếp TikTok API post/item_list
-    // (bypass DOM rendering, dùng cookies/session của page)
+    // Dùng in-page fetch gọi TikTok API nếu có secUid
     if (secUid) {
-        console.log('  📡 Gọi trực tiếp TikTok post/item_list API từ page context...');
+        console.log('  📡 Gọi trực tiếp post/item_list API...');
         let cursor = 0;
-        for (let page_num = 0; page_num < 5; page_num++) {
+        for (let pn = 0; pn < 5; pn++) {
             try {
                 const apiResult = await page.evaluate(async (suid, cur) => {
                     try {
-                        const res = await fetch(
-                            `/api/post/item_list/?WebIdLastTime=0&aid=1988&app_language=en&app_name=tiktok_web&browser_language=en-US&browser_name=Mozilla&browser_online=true&browser_platform=Win32&browser_version=5.0&channel=tiktok_web&cookie_enabled=true&count=35&coverFormat=2&cursor=${cur}&device_platform=web_pc&focus_state=true&from_page=user&history_len=1&is_fullscreen=false&is_page_visible=true&language=en&os=windows&priority_region=&referer=&region=US&screen_height=900&screen_width=1280&secUid=${encodeURIComponent(suid)}&tz_name=Etc/GMT&webcast_language=en`,
-                            { credentials: 'include' }
-                        );
-                        const data = await res.json();
-                        return {
-                            items: data.itemList || [],
-                            hasMore: !!data.hasMore,
-                            cursor: data.cursor || '0',
-                        };
-                    } catch (e) { return { items: [], hasMore: false, cursor: '0', error: e.message }; }
+                        const r = await fetch(`/api/post/item_list/?aid=1988&count=35&cursor=${cur}&secUid=${encodeURIComponent(suid)}&cookie_enabled=true&device_platform=web_pc`, { credentials: 'include' });
+                        const d = await r.json();
+                        return { items: d.itemList || [], hasMore: !!d.hasMore, cursor: d.cursor || '0' };
+                    } catch (e) { return { items: [], hasMore: false, error: e.message }; }
                 }, secUid, cursor);
 
-                if (apiResult.error) {
-                    console.log(`    ⚠️ API error: ${apiResult.error}`);
-                    break;
-                }
-
+                if (apiResult.error) { console.log(`    ⚠️ ${apiResult.error}`); break; }
                 if (apiResult.items.length > 0) {
-                    apiResult.items.forEach(v => {
-                        v._source = 'own';
-                        ownVideos.set(v.id, v);
-                    });
-                    console.log(`    📡 Page ${page_num}: +${apiResult.items.length} (own total: ${ownVideos.size})`);
+                    apiResult.items.forEach(v => { v._source = 'own'; ownVideos.set(v.id, v); });
+                    console.log(`    📡 +${apiResult.items.length} (own total: ${ownVideos.size})`);
                 }
-
-                if (!apiResult.hasMore) {
-                    console.log(`    📡 Không còn trang nào nữa`);
-                    break;
-                }
+                if (!apiResult.hasMore) break;
                 cursor = apiResult.cursor;
-            } catch (e) {
-                console.log(`    ⚠️ In-page API error: ${e.message}`);
-                break;
-            }
+            } catch (e) { console.log(`    ⚠️ ${e.message}`); break; }
         }
     }
 
-    // Nếu vẫn chưa đủ, thử navigate tới từng video page
-    if (ownVideos.size < 5 && ownVideos.size > 0) {
-        console.log(`  🔄 Chỉ có ${ownVideos.size} own videos, thử lấy thêm...`);
-        // Lấy IDs đã có
-        const existingIds = [...ownVideos.keys()];
-        console.log(`    IDs đã có: ${existingIds.join(', ')}`);
+    // Navigate tới từng video page để lấy data (cho extra IDs + missing videos)
+    const EXTRA_IDS = (process.env.EXTRA_VIDEO_IDS || '').split(',').filter(Boolean);
+    const allKnownIds = [...new Set([...EXTRA_IDS])];
+    const missingIds = allKnownIds.filter(id => !ownVideos.has(id) && !repostVideos.has(id));
+
+    if (missingIds.length > 0) {
+        console.log(`  🎯 Fetching ${missingIds.length} extra videos qua page navigation...`);
+        for (const videoId of missingIds) {
+            try {
+                const videoUrl = `https://www.tiktok.com/@${username}/video/${videoId}`;
+                await page.goto(videoUrl, { waitUntil: 'networkidle2', timeout: 15000 });
+                await new Promise(r => setTimeout(r, 2000));
+
+                const videoData = await page.evaluate(() => {
+                    try {
+                        const root = window.__UNIVERSAL_DATA_FOR_REHYDRATION__;
+                        const scope = root?.['__DEFAULT_SCOPE__'];
+                        // Video page SSR data is in 'webapp.video-detail'
+                        const detail = scope?.['webapp.video-detail'];
+                        if (detail?.itemInfo?.itemStruct) return detail.itemInfo.itemStruct;
+                        // Fallback: try other paths
+                        if (detail?.itemStruct) return detail.itemStruct;
+                        return null;
+                    } catch { return null; }
+                });
+
+                if (videoData) {
+                    videoData._source = 'own';
+                    ownVideos.set(videoId, videoData);
+                    console.log(`    ✅ ${videoId}: "${(videoData.desc || '').slice(0, 40)}"`);
+                } else {
+                    console.log(`    ⚠️ ${videoId}: no SSR data on video page`);
+                }
+            } catch (e) {
+                console.log(`    ❌ ${videoId}: ${e.message}`);
+            }
+        }
+        // Navigate back to profile for Reposts tab
+        await page.goto(`https://www.tiktok.com/@${username}`, { waitUntil: 'networkidle2', timeout: 30000 });
+        await new Promise(r => setTimeout(r, 3000));
     }
 
     console.log(`  ✅ Videos tab xong: ${ownVideos.size} videos gốc`);
