@@ -2,7 +2,9 @@ FROM node:22-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
+    xvfb \
     fonts-liberation \
+    fonts-noto-color-emoji \
     libasound2 \
     libatk-bridge2.0-0 \
     libatk1.0-0 \
@@ -19,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV DISPLAY=:99
 
 WORKDIR /app
 
@@ -27,4 +30,5 @@ RUN npm ci --only=production
 
 COPY scraper-worker.js ./
 
-CMD ["node", "scraper-worker.js"]
+# Khởi động Xvfb virtual display rồi chạy scraper
+CMD Xvfb :99 -screen 0 1280x900x24 -nolisten tcp &  sleep 1 && node scraper-worker.js

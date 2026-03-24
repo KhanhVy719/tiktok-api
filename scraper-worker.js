@@ -58,12 +58,20 @@ let browserInstance = null;
 async function getBrowser() {
     if (!browserInstance || !browserInstance.connected) {
         const launchOptions = {
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            headless: false, // Dùng Xvfb virtual display thay vì headless
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--window-size=1280,900',
+                '--start-maximized',
+            ]
         };
         if (process.env.PUPPETEER_EXECUTABLE_PATH) {
             launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
         }
+        console.log(`  🖥️ Launching Chromium (DISPLAY=${process.env.DISPLAY || 'not set'})`);
         browserInstance = await puppeteer.launch(launchOptions);
     }
     return browserInstance;
