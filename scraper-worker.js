@@ -1,4 +1,4 @@
-const puppeteer = require('puppeteer-extra');
+﻿const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 const { StalkUser } = require('@tobyg74/tiktok-api-dl');
@@ -78,167 +78,61 @@ async function getBrowser() {
 }
 
 async function scrapeVideos(username, profileSecUid) {
-    // Chỉ lấy videos gốc (own videos), bỏ reposts
-    console.log(`  [Puppeteer] Bắt đầu scrape videos gốc... (profileSecUid: ${profileSecUid ? profileSecUid.slice(0, 20) + '...' : 'NONE'})`);
+    console.log('  [Scraper] Bắt đầu lấy videos gốc...');
+    const ownVideos = new Map();
+
+    // === 1. External API: nguồn dữ liệu chính (không phụ thuộc VPS IP) ===
+    console.log('  📡 [External API] Lấy video list...');
+    const externalItems = await fetchFromExternalAPI(username);
+    if (externalItems && externalItems.length > 0) {
+        externalItems.forEach(v => {
+            v._source = 'own';
+            ownVideos.set(v.id, v);
+        });
+        console.log(`  ✅ [External API] ${ownVideos.size} videos`);
+    } else {
+        console.log('  ⚠️ [External API] Không lấy được data');
+    }
+
+    // === 2. Puppeteer: lấy cookies + extra IDs ===
     const browser = await getBrowser();
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    const ownVideos = new Map();
-    const apiEndpoints = new Map();
-
+    // Bonus: bắt thêm videos nếu response listener nhận được
     page.on('response', async (response) => {
         const url = response.url();
-        // Debug: log ALL tiktok API calls
-        if (url.includes('tiktok.com/api') && url.includes('item_list')) {
-            const apiPath = url.match(/\/api\/([^?]+)/)?.[1] || 'unknown';
-            console.log(`  📡 API hit: ${apiPath} (status: ${response.status()})`);
-        }
         if (url.includes('tiktok.com/api') && url.includes('/post/item_list') && !url.includes('repost')) {
             try {
-                const apiPath = url.match(/\/api\/([^?]+)/)?.[1] || 'unknown';
                 const text = await response.text();
-                let json;
-                try {
-                    json = JSON.parse(text);
-                } catch (parseErr) {
-                    // Truncated JSON — try to extract itemList from partial response
-                    console.log(`  ⚠️ Truncated JSON (${text.length} chars), attempting partial parse...`);
-                    const itemListMatch = text.match(/"itemList"\s*:\s*\[/);
-                    if (itemListMatch) {
-                        // Extract from itemList start to end, try adding brackets
-                        const start = text.indexOf('"itemList"');
-                        let partial = text.slice(start);
-                        // Try to find complete item objects using id pattern
-                        const idMatches = [...partial.matchAll(/"id"\s*:\s*"(\d+)"/g)];
-                        if (idMatches.length > 0) {
-                            console.log(`  📋 Found ${idMatches.length} item IDs in truncated response`);
-                        }
+                if (text.length > 10) {
+                    const json = JSON.parse(text);
+                    if (json.itemList && json.itemList.length > 0) {
+                        json.itemList.forEach(v => { v._source = 'own'; ownVideos.set(v.id, v); });
+                        console.log(`  [Puppeteer bonus] +${json.itemList.length} (total: ${ownVideos.size})`);
                     }
-                    json = null;
                 }
-                if (json && json.itemList && json.itemList.length > 0) {
-                    json.itemList.forEach(v => {
-                        v._source = 'own';
-                        ownVideos.set(v.id, v);
-                    });
-                    console.log(`  [${apiPath}] +${json.itemList.length} (own: ${ownVideos.size})`);
-                } else if (json) {
-                    console.log(`  [${apiPath}] empty response (hasMore: ${json.hasMore}, cursor: ${json.cursor})`);
-                }
-                if (json) {
-                    apiEndpoints.set(apiPath, {
-                        url,
-                        hasMore: !!json.hasMore,
-                        cursor: json.cursor || '0',
-                    });
-                }
-            } catch (e) {
-                console.log(`  ⚠️ API error: ${e.message}`);
-            }
+            } catch (e) { }
         }
     });
 
     await page.setViewport({ width: 1280, height: 900 });
     await page.goto(`https://www.tiktok.com/@${username}`, {
-        waitUntil: 'networkidle2',
-        timeout: 30000
+        waitUntil: 'networkidle2', timeout: 30000
     });
+    try { const btn = await page.$('button[data-e2e="cookie-banner-accept"]'); if (btn) await btn.click(); } catch (e) {}
+    await new Promise(r => setTimeout(r, 3000));
 
-    // Bỏ qua cookie banner
-    try {
-        const btn = await page.$('button[data-e2e="cookie-banner-accept"]');
-        if (btn) await btn.click();
-    } catch (e) { }
-
-    // === 1. Tab VIDEOS — lấy videos gốc ===
-    try {
-        const videoTab = await page.$('p[data-e2e="videos-tab"]');
-        if (videoTab) {
-            await videoTab.click();
-            console.log('  📹 Clicked tab Videos');
-        } else {
-            console.log('  ⚠️ Không tìm thấy tab Videos selector');
-        }
-    } catch (e) { console.log('  ⚠️ Lỗi click Videos tab:', e.message); }
-
-    await new Promise(r => setTimeout(r, 5000));
-
-    // Lấy secUid từ SSR data + debug
-    let secUid = '';
-    try {
-        const ssrDebug = await page.evaluate(() => {
-            try {
-                const root = window.__UNIVERSAL_DATA_FOR_REHYDRATION__;
-                if (!root) return { error: 'no __UNIVERSAL_DATA_FOR_REHYDRATION__' };
-                const scope = root['__DEFAULT_SCOPE__'];
-                if (!scope) return { error: 'no __DEFAULT_SCOPE__', keys: Object.keys(root) };
-                const userDetail = scope['webapp.user-detail'];
-                if (!userDetail) return { error: 'no webapp.user-detail', keys: Object.keys(scope) };
-                const userInfo = userDetail.userInfo;
-                if (!userInfo) return { error: 'no userInfo', keys: Object.keys(userDetail) };
-                const user = userInfo.user;
-                if (!user) return { error: 'no user', keys: Object.keys(userInfo) };
-                return {
-                    secUid: user.secUid || '',
-                    uniqueId: user.uniqueId || '',
-                    userKeys: Object.keys(user).filter(k => k.toLowerCase().includes('uid') || k.toLowerCase().includes('sec')),
-                };
-            } catch (e) { return { error: e.message }; }
-        });
-        console.log('  🔍 SSR debug:', JSON.stringify(ssrDebug));
-        secUid = ssrDebug.secUid || '';
-        if (secUid) console.log(`  🔑 secUid (SSR): ${secUid.slice(0, 30)}...`);
-    } catch (e) { console.log('  ⚠️ SSR error:', e.message); }
-
-    // Fallback secUid from profile if SSR failed
-    if (!secUid && profileSecUid) {
-        secUid = profileSecUid;
-        console.log(`  🔑 secUid (profile fallback): ${secUid.slice(0, 30)}...`);
-    }
-
-    // Dùng in-page fetch gọi TikTok API nếu có secUid
-    if (secUid) {
-        console.log('  📡 Gọi trực tiếp post/item_list API...');
-        let cursor = 0;
-        for (let pn = 0; pn < 5; pn++) {
-            try {
-                const apiResult = await page.evaluate(async (suid, cur) => {
-                    try {
-                        const r = await fetch(`/api/post/item_list/?aid=1988&count=35&cursor=${cur}&secUid=${encodeURIComponent(suid)}&cookie_enabled=true&device_platform=web_pc`, { credentials: 'include' });
-                        const d = await r.json();
-                        return { items: d.itemList || [], hasMore: !!d.hasMore, cursor: d.cursor || '0' };
-                    } catch (e) { return { items: [], hasMore: false, error: e.message }; }
-                }, secUid, cursor);
-
-                if (apiResult.error) { console.log(`    ⚠️ ${apiResult.error}`); break; }
-                if (apiResult.items.length > 0) {
-                    apiResult.items.forEach(v => { v._source = 'own'; ownVideos.set(v.id, v); });
-                    console.log(`    📡 +${apiResult.items.length} (own total: ${ownVideos.size})`);
-                }
-                if (!apiResult.hasMore) break;
-                cursor = apiResult.cursor;
-            } catch (e) { console.log(`    ⚠️ ${e.message}`); break; }
-        }
-    }
-
-    // Navigate tới từng video page để lấy data (cho extra IDs + missing videos)
+    // Extra IDs via page navigation
     const EXTRA_IDS = (process.env.EXTRA_VIDEO_IDS || '').split(',').filter(Boolean);
-    const allKnownIds = [...new Set([...EXTRA_IDS])];
-    const missingIds = allKnownIds.filter(id => !ownVideos.has(id));
-
+    const missingIds = EXTRA_IDS.filter(id => !ownVideos.has(id));
     if (missingIds.length > 0) {
-        console.log(`  🎯 Fetching ${missingIds.length} extra posts qua page navigation...`);
+        console.log(`  🎯 Fetching ${missingIds.length} extra posts...`);
         for (const postId of missingIds) {
             try {
-                // Thử /video/ trước, nếu không có SSR thì thử /photo/
-                const urls = [
-                    `https://www.tiktok.com/@${username}/video/${postId}`,
-                    `https://www.tiktok.com/@${username}/photo/${postId}`,
-                ];
                 let postData = null;
-                for (const url of urls) {
-                    await page.goto(url, { waitUntil: 'networkidle2', timeout: 15000 });
+                for (const type of ['video', 'photo']) {
+                    await page.goto(`https://www.tiktok.com/@${username}/${type}/${postId}`, { waitUntil: 'networkidle2', timeout: 15000 });
                     await new Promise(r => setTimeout(r, 2000));
                     postData = await page.evaluate(() => {
                         try {
@@ -250,50 +144,14 @@ async function scrapeVideos(username, profileSecUid) {
                     });
                     if (postData) break;
                 }
-
                 if (postData) {
                     postData._source = 'own';
                     ownVideos.set(postId, postData);
-                    const type = postData.imagePost ? 'photo' : 'video';
-                    console.log(`    ✅ ${postId} (${type}): "${(postData.desc || '').slice(0, 40)}"`);
+                    console.log(`    ✅ ${postId}: "${(postData.desc || '').slice(0, 40)}"`);
                 } else {
                     console.log(`    ⚠️ ${postId}: no SSR data`);
                 }
-            } catch (e) {
-                console.log(`    ❌ ${postId}: ${e.message}`);
-            }
-        }
-        // Navigate back to profile for Reposts tab
-        await page.goto(`https://www.tiktok.com/@${username}`, { waitUntil: 'networkidle2', timeout: 30000 });
-        await new Promise(r => setTimeout(r, 3000));
-    }
-
-    console.log(`  ✅ Videos tab xong: ${ownVideos.size} videos gốc`);
-
-    // Phân trang cho post/item_list nếu có
-    for (const [apiPath, state] of apiEndpoints) {
-        if (!state.hasMore) continue;
-        let { url: templateUrl, cursor } = state;
-        console.log(`  Phân trang ${apiPath} (cursor=${cursor})...`);
-
-        for (let i = 0; i < 10; i++) {
-            try {
-                const nextUrl = templateUrl.replace(/cursor=\d+/, `cursor=${cursor}`);
-                const moreData = await page.evaluate(async (fetchUrl) => {
-                    const r = await fetch(fetchUrl, { credentials: 'include' });
-                    return r.json();
-                }, nextUrl);
-
-                if (moreData.itemList && moreData.itemList.length > 0) {
-                    moreData.itemList.forEach(v => {
-                        v._source = 'own';
-                        ownVideos.set(v.id, v);
-                    });
-                    console.log(`  [${apiPath}] +${moreData.itemList.length} (own total: ${ownVideos.size})`);
-                }
-                if (!moreData.hasMore) break;
-                cursor = moreData.cursor || '0';
-            } catch (e) { break; }
+            } catch (e) { console.log(`    ❌ ${postId}: ${e.message}`); }
         }
     }
 
@@ -303,17 +161,14 @@ async function scrapeVideos(username, profileSecUid) {
     const cookies = await page.cookies();
     const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
     console.log(`  Lưu ${cookies.length} cookies cho CDN proxy`);
-
     await page.close();
 
     return {
         videos: formatItems(ownVideos, username),
         cookies: cookieStr,
-        source: 'puppeteer'
+        source: 'external-api+puppeteer'
     };
 }
-
-// === Format video/image items ===
 function formatItems(videoMap, username) {
     const extractUrl = (field) => {
         if (!field) return '';
