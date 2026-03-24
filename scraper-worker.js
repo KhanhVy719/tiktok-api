@@ -138,89 +138,89 @@ async function scrapeVideos(username) {
 
     await new Promise(r => setTimeout(r, 5000));
 
-    // Thử lấy từ SSR data trước
+    // Cuộn trang để load hết videos (profile chỉ có ~7)
+    for (let i = 0; i < 10; i++) {
+        await page.evaluate(() => window.scrollBy(0, 600));
+        await new Promise(r => setTimeout(r, 1000));
+    }
+
+    // Lấy TẤT CẢ video IDs từ HTML source + DOM
+    let ownVideoIds = new Set();
+
+    // Cách 1: Regex từ raw HTML source
+    try {
+        const html = await page.content();
+        const idMatches = html.matchAll(/@The_sunflower71\/video\/(\d+)/gi);
+        for (const m of idMatches) ownVideoIds.add(m[1]);
+        // Cũng tìm pattern khác
+        const idMatches2 = html.matchAll(/@the_sunflower71\/video\/(\d+)/gi);
+        for (const m of idMatches2) ownVideoIds.add(m[1]);
+        console.log(`  📄 HTML source: ${ownVideoIds.size} video IDs found`);
+    } catch (e) { console.log('  ⚠️ HTML parsing error:', e.message); }
+
+    // Cách 2: DOM links
+    try {
+        const domIds = await page.evaluate(() => {
+            const ids = [];
+            document.querySelectorAll('a[href*="/video/"]').forEach(a => {
+                const m = a.href.match(/\/video\/(\d+)/);
+                if (m) ids.push(m[1]);
+            });
+            return ids;
+        });
+        domIds.forEach(id => ownVideoIds.add(id));
+        console.log(`  🔗 DOM links: thêm ${domIds.length} IDs (tổng unique: ${ownVideoIds.size})`);
+    } catch (e) {}
+
+    // Cách 3: SSR data
     try {
         const ssrItems = await page.evaluate(() => {
             try {
                 const data = window.__UNIVERSAL_DATA_FOR_REHYDRATION__?.['__DEFAULT_SCOPE__']?.['webapp.user-detail'];
-                if (data?.userInfo?.itemList && data.userInfo.itemList.length > 0) {
-                    return data.userInfo.itemList;
-                }
-                // Cũng thử path khác
-                if (data?.itemList && data.itemList.length > 0) {
-                    return data.itemList;
-                }
-            } catch {}
-            return [];
+                const items = data?.userInfo?.itemList || data?.itemList || [];
+                return items.map(v => ({ id: v.id, full: v }));
+            } catch { return []; }
         });
-        if (ssrItems.length > 0) {
-            ssrItems.forEach(v => {
-                v._source = 'own';
-                ownVideos.set(v.id, v);
-            });
-            console.log(`  📦 SSR data: ${ssrItems.length} own videos`);
+        for (const item of ssrItems) {
+            ownVideoIds.add(item.id);
+            if (item.full && !ownVideos.has(item.id)) {
+                item.full._source = 'own';
+                ownVideos.set(item.id, item.full);
+            }
         }
-    } catch (e) { console.log('  ⚠️ SSR extraction error:', e.message); }
+        if (ssrItems.length > 0) console.log(`  📦 SSR: ${ssrItems.length} items`);
+    } catch (e) {}
 
-    // Cuộn trang để trigger API calls cho videos
-    for (let i = 0; i < 10; i++) {
-        await page.evaluate(() => window.scrollBy(0, 600));
-        await new Promise(r => setTimeout(r, 1500));
+    // Loại bỏ IDs đã có trong API-captured hoặc repost
+    const newOwnIds = [...ownVideoIds].filter(id => !ownVideos.has(id) && !repostVideos.has(id));
+    console.log(`  📊 Videos tab: ${ownVideoIds.size} IDs, ${ownVideos.size} từ API, ${newOwnIds.length} cần fetch thêm`);
+
+    // Fetch chi tiết từng video chưa có qua External API
+    if (newOwnIds.length > 0) {
+        console.log(`  🔄 Fetching ${newOwnIds.length} videos qua fetch_one_video...`);
+        for (const videoId of newOwnIds) {
+            try {
+                const url = `https://www.tiktok.com/@${username}/video/${videoId}`;
+                const res = await fetch(`${EXTERNAL_API}/api/tiktok/web/fetch_one_video?url=${encodeURIComponent(url)}`);
+                if (res.ok) {
+                    const json = await res.json();
+                    if (json.code === 200 && json.data) {
+                        json.data._source = 'own';
+                        ownVideos.set(videoId, json.data);
+                        console.log(`    ✅ ${videoId}: "${(json.data.desc || '').slice(0, 30)}..."`);
+                    } else {
+                        console.log(`    ⚠️ ${videoId}: API code=${json.code}`);
+                    }
+                }
+                // Rate limit
+                await new Promise(r => setTimeout(r, 500));
+            } catch (e) {
+                console.log(`    ❌ ${videoId}: ${e.message}`);
+            }
+        }
     }
-    console.log(`  Sau cuộn Videos tab: own=${ownVideos.size}, reposts=${repostVideos.size}`);
 
-    // DOM scraping — luôn chạy để bổ sung thêm videos từ tab hiện tại
-    console.log('  🔍 DOM scraping cho videos gốc...');
-    try {
-        const domVideos = await page.evaluate(() => {
-            const items = [];
-            // Tìm tất cả link video trong grid hiện tại
-            document.querySelectorAll('a[href*="/video/"]').forEach(a => {
-                const href = a.href;
-                const idMatch = href.match(/\/video\/(\d+)/);
-                if (idMatch) {
-                    const id = idMatch[1];
-                    const img = a.querySelector('img');
-                    const viewsEl = a.querySelector('strong');
-                    items.push({
-                        id,
-                        url: href,
-                        cover: img?.src || '',
-                        views: viewsEl?.textContent || '0',
-                    });
-                }
-            });
-            return items;
-        });
-
-        if (domVideos.length > 0) {
-            let added = 0;
-            domVideos.forEach(dv => {
-                // Chỉ thêm nếu chưa có trong ownVideos VÀ cũng không có trong repostVideos
-                if (!ownVideos.has(dv.id) && !repostVideos.has(dv.id)) {
-                    ownVideos.set(dv.id, {
-                        id: dv.id,
-                        desc: '',
-                        createTime: 0,
-                        _source: 'own',
-                        _fromDom: true,
-                        video: {
-                            cover: dv.cover,
-                            dynamicCover: dv.cover,
-                            playAddr: '',
-                            downloadAddr: '',
-                            duration: 0,
-                        },
-                        stats: {
-                            playCount: parseInt(dv.views.replace(/[^\d]/g, '')) || 0,
-                        },
-                    });
-                    added++;
-                }
-            });
-            console.log(`  🔍 DOM scraping: ${domVideos.length} links, ${added} new own videos added (total own: ${ownVideos.size})`);
-        }
-    } catch (e) { console.log('  ⚠️ DOM scraping error:', e.message); }
+    console.log(`  ✅ Videos tab xong: ${ownVideos.size} videos gốc`);
 
     // Phân trang cho post/item_list (own videos) nếu có
     for (const [apiPath, state] of apiEndpoints) {
