@@ -49,12 +49,21 @@ async function scrapeAttempt(username, profileSecUid, attemptNum) {
             const url = response.url();
             if (url.includes('tiktok.com/api') && url.includes('item_list')) {
                 try {
+                    const isRepostEndpoint = url.includes('repost');
                     const text = await response.text();
                     if (text.length > 10) {
                         const json = JSON.parse(text);
                         if (json.itemList && json.itemList.length > 0) {
-                            json.itemList.forEach(v => { v._source = 'own'; ownVideos.set(v.id, v); });
-                            console.log(`    [Response] +${json.itemList.length} videos (total: ${ownVideos.size})`);
+                            let ownCount = 0, repostCount = 0;
+                            json.itemList.forEach(v => {
+                                const authorId = (v.author?.uniqueId || '').toLowerCase();
+                                const isOwn = authorId === username.toLowerCase();
+                                v._source = isOwn ? 'own' : 'repost';
+                                ownVideos.set(v.id, v);
+                                if (isOwn) ownCount++; else repostCount++;
+                            });
+                            const endpoint = isRepostEndpoint ? 'repost' : 'post';
+                            console.log(`    [${endpoint}] +${json.itemList.length} (own: ${ownCount}, repost: ${repostCount}, total: ${ownVideos.size})`);
                         }
                     }
                 } catch (e) { }
