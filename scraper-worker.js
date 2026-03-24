@@ -240,12 +240,16 @@ async function scrapeVideos(username, profileSecUid) {
         const result = await scrapeAttempt(username, profileSecUid, attempt);
         
         if (result.videos.size > 0) {
-            console.log(`  📊 Tổng: ${result.videos.size} videos (attempt ${attempt})`);
-            return {
-                videos: formatItems(result.videos, username),
-                cookies: result.cookies,
-                source: `puppeteer-attempt-${attempt}`
-            };
+            // Chỉ giữ video gốc (own), bỏ repost
+            const ownOnly = new Map([...result.videos].filter(([_, v]) => v._source === 'own'));
+            console.log(`  📊 Tổng: ${result.videos.size} (own: ${ownOnly.size}, repost: ${result.videos.size - ownOnly.size}) — attempt ${attempt}`);
+            if (ownOnly.size > 0) {
+                return {
+                    videos: formatItems(ownOnly, username),
+                    cookies: result.cookies,
+                    source: `puppeteer-attempt-${attempt}`
+                };
+            }
         }
 
         if (attempt < 3) {
