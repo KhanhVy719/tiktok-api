@@ -79,7 +79,7 @@ async function getBrowser() {
 
 async function scrapeVideos(username, profileSecUid) {
     // Chỉ lấy videos gốc (own videos), bỏ reposts
-    console.log('  [Puppeteer] Bắt đầu scrape videos gốc...');
+    console.log(`  [Puppeteer] Bắt đầu scrape videos gốc... (profileSecUid: ${profileSecUid ? profileSecUid.slice(0, 20) + '...' : 'NONE'})`);
     const browser = await getBrowser();
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
