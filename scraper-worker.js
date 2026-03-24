@@ -96,124 +96,15 @@ async function scrapeAttempt(username, profileSecUid, attemptNum) {
         }
         await randomDelay(2000, 3000);
 
-        // Strategy A: Check if response listener got data
+        // Kết quả từ response listener
         if (ownVideos.size > 0) {
-            console.log(`    ✅ [Strategy A] Response listener got ${ownVideos.size} videos`);
-        }
-
-        // Strategy B: In-page fetch with secUid
-        if (ownVideos.size === 0 && profileSecUid) {
-            console.log('    📡 [Strategy B] In-page fetch...');
-            const apiResult = await page.evaluate(async (suid) => {
-                try {
-                    const r = await fetch(`/api/post/item_list/?aid=1988&count=35&cursor=0&secUid=${encodeURIComponent(suid)}&cookie_enabled=true&device_platform=web_pc`, {
-                        credentials: 'include',
-                        headers: { 'Accept': 'application/json' }
-                    });
-                    const text = await r.text();
-                    if (text.length < 10) return { items: [], error: `empty (${text.length} chars)` };
-                    const d = JSON.parse(text);
-                    return { items: d.itemList || [], hasMore: !!d.hasMore };
-                } catch (e) { return { items: [], error: e.message }; }
-            }, profileSecUid);
-
-            if (apiResult.error) console.log(`      ⚠️ ${apiResult.error}`);
-            if (apiResult.items.length > 0) {
-                apiResult.items.forEach(v => { v._source = 'own'; ownVideos.set(v.id, v); });
-                console.log(`      ✅ +${apiResult.items.length} (total: ${ownVideos.size})`);
-            }
-        }
-
-        // Strategy C: DOM extraction — find video links from rendered page
-        if (ownVideos.size === 0) {
-            console.log('    🔍 [Strategy C] DOM extraction...');
-            // Scroll back up then down to trigger re-render
-            await page.evaluate(() => window.scrollTo(0, 0));
-            await delay(1500);
-            for (let i = 0; i < 3; i++) {
-                await page.evaluate(() => window.scrollBy(0, 500));
-                await delay(1200);
-            }
-
-            const videoIds = await page.evaluate((un) => {
-                const results = [];
-                // Find ALL links that contain video or photo IDs
-                const allAnchors = document.querySelectorAll('a');
-                for (const a of allAnchors) {
-                    const href = a.href || a.getAttribute('href') || '';
-                    const match = href.match(/\/(video|photo)\/(\d{10,})/);
-                    if (match && !results.find(r => r.id === match[2])) {
-                        results.push({ id: match[2], type: match[1] });
-                    }
-                }
-                return results;
-            }, username);
-
-            if (videoIds.length > 0) {
-                console.log(`      📋 Found ${videoIds.length} video IDs in DOM`);
-                // Navigate to each for full SSR data
-                for (const vid of videoIds.slice(0, 10)) {
-                    if (ownVideos.has(vid.id)) continue;
-                    try {
-                        await page.goto(`https://www.tiktok.com/@${username}/${vid.type}/${vid.id}`, {
-                            waitUntil: 'networkidle2', timeout: 15000
-                        });
-                        await randomDelay(2000, 3000);
-                        const postData = await page.evaluate(() => {
-                            try {
-                                const root = window.__UNIVERSAL_DATA_FOR_REHYDRATION__;
-                                const scope = root?.['__DEFAULT_SCOPE__'];
-                                const detail = scope?.['webapp.video-detail'];
-                                return detail?.itemInfo?.itemStruct || detail?.itemStruct || null;
-                            } catch { return null; }
-                        });
-                        if (postData) {
-                            postData._source = 'own';
-                            ownVideos.set(vid.id, postData);
-                            console.log(`      ✅ ${vid.id}: "${(postData.desc || '').slice(0, 30)}"`);
-                        }
-                    } catch (e) { console.log(`      ❌ ${vid.id}: ${e.message}`); }
-                }
+            console.log(`    ✅ Response listener got ${ownVideos.size} videos`);
+        } else {
+            const bodyText = await page.evaluate(() => document.body.innerText.slice(0, 200));
+            if (bodyText.includes('Something went wrong')) {
+                console.log('    ⚠️ TikTok shows "Something went wrong"');
             } else {
-                // Check page state for debug
-                const bodyText = await page.evaluate(() => document.body.innerText.slice(0, 200));
-                if (bodyText.includes('Something went wrong') || bodyText.includes('went wrong')) {
-                    console.log('      ⚠️ TikTok shows "Something went wrong" — will retry');
-                } else {
-                    console.log('      ⚠️ No video links found in DOM');
-                }
-            }
-        }
-
-        // Extra IDs
-        const EXTRA_IDS = (process.env.EXTRA_VIDEO_IDS || '').split(',').filter(Boolean);
-        const missingIds = EXTRA_IDS.filter(id => !ownVideos.has(id));
-        if (missingIds.length > 0) {
-            console.log(`    🎯 Extra posts: ${missingIds.length}...`);
-            for (const postId of missingIds) {
-                try {
-                    let postData = null;
-                    for (const type of ['video', 'photo']) {
-                        await page.goto(`https://www.tiktok.com/@${username}/${type}/${postId}`, {
-                            waitUntil: 'networkidle2', timeout: 15000
-                        });
-                        await randomDelay(1500, 2500);
-                        postData = await page.evaluate(() => {
-                            try {
-                                const root = window.__UNIVERSAL_DATA_FOR_REHYDRATION__;
-                                const scope = root?.['__DEFAULT_SCOPE__'];
-                                const detail = scope?.['webapp.video-detail'];
-                                return detail?.itemInfo?.itemStruct || detail?.itemStruct || null;
-                            } catch { return null; }
-                        });
-                        if (postData) break;
-                    }
-                    if (postData) {
-                        postData._source = 'own';
-                        ownVideos.set(postId, postData);
-                        console.log(`      ✅ ${postId}: "${(postData.desc || '').slice(0, 30)}"`);
-                    }
-                } catch (e) { }
+                console.log('    ⚠️ Không có video nào từ post/item_list');
             }
         }
 
