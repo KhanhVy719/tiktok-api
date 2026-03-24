@@ -138,41 +138,91 @@ async function scrapeVideos(username) {
 
     await new Promise(r => setTimeout(r, 5000));
 
-    // Cuộn trang để load hết videos (profile chỉ có ~7)
-    for (let i = 0; i < 10; i++) {
+    // Cuộn trang
+    for (let i = 0; i < 8; i++) {
         await page.evaluate(() => window.scrollBy(0, 600));
         await new Promise(r => setTimeout(r, 1000));
     }
 
-    // Lấy TẤT CẢ video IDs từ HTML source + DOM
+    // === DEBUG: Inspect DOM structure để tìm video grid items ===
     let ownVideoIds = new Set();
+    try {
+        const debugInfo = await page.evaluate(() => {
+            const result = { selectors: {}, videoIds: [], gridHtml: '' };
 
-    // Cách 1: Regex từ raw HTML source
+            // Thử nhiều selectors khác nhau
+            const selectors = {
+                'user-post-item': '[data-e2e="user-post-item"]',
+                'user-post-item-list': '[data-e2e="user-post-item-list"]',
+                'user-post-item a': '[data-e2e="user-post-item"] a',
+                'user-post-item-desc': '[data-e2e="user-post-item-desc"]',
+                'DivItemContainer': 'div[class*="ItemContainer"]',
+                'DivVideoFeed': 'div[class*="VideoFeed"]',
+                'video-link': 'a[href*="/video/"]',
+                'photo-link': 'a[href*="/photo/"]',
+                'any-post-link': 'a[href*="/@"]',
+            };
+
+            for (const [name, sel] of Object.entries(selectors)) {
+                const els = document.querySelectorAll(sel);
+                result.selectors[name] = els.length;
+                // Lấy href/attributes từ elements tìm được
+                if (els.length > 0 && els.length <= 20) {
+                    Array.from(els).forEach(el => {
+                        // Tìm video ID từ href
+                        const href = el.href || el.querySelector('a')?.href || '';
+                        const match = href.match(/\/video\/(\d+)/);
+                        if (match) result.videoIds.push(match[1]);
+                        // Tìm trong innerHTML
+                        const innerMatch = el.innerHTML.match(/\/video\/(\d+)/g);
+                        if (innerMatch) {
+                            innerMatch.forEach(m => {
+                                const id = m.match(/(\d+)/)?.[0];
+                                if (id) result.videoIds.push(id);
+                            });
+                        }
+                    });
+                }
+            }
+
+            // Lấy mẫu HTML từ grid container
+            const grid = document.querySelector('[data-e2e="user-post-item-list"]')
+                || document.querySelector('div[class*="VideoFeed"]')
+                || document.querySelector('div[class*="DivVideoFeedV2"]');
+            if (grid) {
+                result.gridHtml = grid.innerHTML.substring(0, 500);
+            }
+
+            // Tìm TẤT CẢ href có /video/ trong toàn bộ page
+            document.querySelectorAll('a').forEach(a => {
+                const m = a.href?.match(/\/video\/(\d+)/);
+                if (m) result.videoIds.push(m[1]);
+            });
+
+            return result;
+        });
+
+        console.log('  🔍 DOM Debug selectors:', JSON.stringify(debugInfo.selectors));
+        if (debugInfo.gridHtml) {
+            console.log('  🔍 Grid HTML (500 chars):', debugInfo.gridHtml.substring(0, 200));
+        }
+        if (debugInfo.videoIds.length > 0) {
+            const uniqueIds = [...new Set(debugInfo.videoIds)];
+            uniqueIds.forEach(id => ownVideoIds.add(id));
+            console.log(`  🔍 DOM tìm ${uniqueIds.length} video IDs: ${uniqueIds.join(', ')}`);
+        }
+    } catch (e) { console.log('  ⚠️ DOM debug error:', e.message); }
+
+    // Thử tìm video IDs từ raw HTML (pattern rộng hơn)
     try {
         const html = await page.content();
-        const idMatches = html.matchAll(/@The_sunflower71\/video\/(\d+)/gi);
-        for (const m of idMatches) ownVideoIds.add(m[1]);
-        // Cũng tìm pattern khác
-        const idMatches2 = html.matchAll(/@the_sunflower71\/video\/(\d+)/gi);
-        for (const m of idMatches2) ownVideoIds.add(m[1]);
-        console.log(`  📄 HTML source: ${ownVideoIds.size} video IDs found`);
-    } catch (e) { console.log('  ⚠️ HTML parsing error:', e.message); }
-
-    // Cách 2: DOM links
-    try {
-        const domIds = await page.evaluate(() => {
-            const ids = [];
-            document.querySelectorAll('a[href*="/video/"]').forEach(a => {
-                const m = a.href.match(/\/video\/(\d+)/);
-                if (m) ids.push(m[1]);
-            });
-            return ids;
-        });
-        domIds.forEach(id => ownVideoIds.add(id));
-        console.log(`  🔗 DOM links: thêm ${domIds.length} IDs (tổng unique: ${ownVideoIds.size})`);
+        // Pattern rộng: tìm BẤT KỲ /video/ID nào (không cần username cụ thể)
+        const allVideoMatches = html.matchAll(/\/video\/(\d{15,25})/g);
+        for (const m of allVideoMatches) ownVideoIds.add(m[1]);
+        console.log(`  📄 HTML scan: ${ownVideoIds.size} total IDs (after dedup)`);
     } catch (e) {}
 
-    // Cách 3: SSR data
+    // SSR data
     try {
         const ssrItems = await page.evaluate(() => {
             try {
@@ -191,32 +241,28 @@ async function scrapeVideos(username) {
         if (ssrItems.length > 0) console.log(`  📦 SSR: ${ssrItems.length} items`);
     } catch (e) {}
 
-    // Loại bỏ IDs đã có trong API-captured hoặc repost
+    // Loại bỏ IDs đã có
     const newOwnIds = [...ownVideoIds].filter(id => !ownVideos.has(id) && !repostVideos.has(id));
-    console.log(`  📊 Videos tab: ${ownVideoIds.size} IDs, ${ownVideos.size} từ API, ${newOwnIds.length} cần fetch thêm`);
+    console.log(`  📊 Videos tab: ${ownVideoIds.size} unique IDs, ${ownVideos.size} từ API, ${newOwnIds.length} cần fetch thêm`);
 
     // Fetch chi tiết từng video chưa có qua External API
-    if (newOwnIds.length > 0) {
-        console.log(`  🔄 Fetching ${newOwnIds.length} videos qua fetch_one_video...`);
-        for (const videoId of newOwnIds) {
-            try {
-                const url = `https://www.tiktok.com/@${username}/video/${videoId}`;
-                const res = await fetch(`${EXTERNAL_API}/api/tiktok/web/fetch_one_video?url=${encodeURIComponent(url)}`);
-                if (res.ok) {
-                    const json = await res.json();
-                    if (json.code === 200 && json.data) {
-                        json.data._source = 'own';
-                        ownVideos.set(videoId, json.data);
-                        console.log(`    ✅ ${videoId}: "${(json.data.desc || '').slice(0, 30)}..."`);
-                    } else {
-                        console.log(`    ⚠️ ${videoId}: API code=${json.code}`);
-                    }
+    for (const videoId of newOwnIds) {
+        try {
+            const url = `https://www.tiktok.com/@${username}/video/${videoId}`;
+            const res = await fetch(`${EXTERNAL_API}/api/tiktok/web/fetch_one_video?url=${encodeURIComponent(url)}`);
+            if (res.ok) {
+                const json = await res.json();
+                if (json.code === 200 && json.data) {
+                    json.data._source = 'own';
+                    ownVideos.set(videoId, json.data);
+                    console.log(`    ✅ ${videoId}: "${(json.data.desc || '').slice(0, 30)}..."`);
+                } else {
+                    console.log(`    ⚠️ ${videoId}: API code=${json.code}`);
                 }
-                // Rate limit
-                await new Promise(r => setTimeout(r, 500));
-            } catch (e) {
-                console.log(`    ❌ ${videoId}: ${e.message}`);
             }
+            await new Promise(r => setTimeout(r, 500));
+        } catch (e) {
+            console.log(`    ❌ ${videoId}: ${e.message}`);
         }
     }
 
