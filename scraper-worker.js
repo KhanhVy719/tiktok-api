@@ -192,35 +192,39 @@ async function scrapeVideos(username) {
     const missingIds = allKnownIds.filter(id => !ownVideos.has(id));
 
     if (missingIds.length > 0) {
-        console.log(`  🎯 Fetching ${missingIds.length} extra videos qua page navigation...`);
-        for (const videoId of missingIds) {
+        console.log(`  🎯 Fetching ${missingIds.length} extra posts qua page navigation...`);
+        for (const postId of missingIds) {
             try {
-                const videoUrl = `https://www.tiktok.com/@${username}/video/${videoId}`;
-                await page.goto(videoUrl, { waitUntil: 'networkidle2', timeout: 15000 });
-                await new Promise(r => setTimeout(r, 2000));
+                // Thử /video/ trước, nếu không có SSR thì thử /photo/
+                const urls = [
+                    `https://www.tiktok.com/@${username}/video/${postId}`,
+                    `https://www.tiktok.com/@${username}/photo/${postId}`,
+                ];
+                let postData = null;
+                for (const url of urls) {
+                    await page.goto(url, { waitUntil: 'networkidle2', timeout: 15000 });
+                    await new Promise(r => setTimeout(r, 2000));
+                    postData = await page.evaluate(() => {
+                        try {
+                            const root = window.__UNIVERSAL_DATA_FOR_REHYDRATION__;
+                            const scope = root?.['__DEFAULT_SCOPE__'];
+                            const detail = scope?.['webapp.video-detail'];
+                            return detail?.itemInfo?.itemStruct || detail?.itemStruct || null;
+                        } catch { return null; }
+                    });
+                    if (postData) break;
+                }
 
-                const videoData = await page.evaluate(() => {
-                    try {
-                        const root = window.__UNIVERSAL_DATA_FOR_REHYDRATION__;
-                        const scope = root?.['__DEFAULT_SCOPE__'];
-                        // Video page SSR data is in 'webapp.video-detail'
-                        const detail = scope?.['webapp.video-detail'];
-                        if (detail?.itemInfo?.itemStruct) return detail.itemInfo.itemStruct;
-                        // Fallback: try other paths
-                        if (detail?.itemStruct) return detail.itemStruct;
-                        return null;
-                    } catch { return null; }
-                });
-
-                if (videoData) {
-                    videoData._source = 'own';
-                    ownVideos.set(videoId, videoData);
-                    console.log(`    ✅ ${videoId}: "${(videoData.desc || '').slice(0, 40)}"`);
+                if (postData) {
+                    postData._source = 'own';
+                    ownVideos.set(postId, postData);
+                    const type = postData.imagePost ? 'photo' : 'video';
+                    console.log(`    ✅ ${postId} (${type}): "${(postData.desc || '').slice(0, 40)}"`);
                 } else {
-                    console.log(`    ⚠️ ${videoId}: no SSR data on video page`);
+                    console.log(`    ⚠️ ${postId}: no SSR data`);
                 }
             } catch (e) {
-                console.log(`    ❌ ${videoId}: ${e.message}`);
+                console.log(`    ❌ ${postId}: ${e.message}`);
             }
         }
         // Navigate back to profile for Reposts tab
