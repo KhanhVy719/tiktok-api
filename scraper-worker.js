@@ -89,6 +89,11 @@ async function scrapeVideos(username) {
 
     page.on('response', async (response) => {
         const url = response.url();
+        // Debug: log ALL tiktok API calls
+        if (url.includes('tiktok.com/api') && url.includes('item_list')) {
+            const apiPath = url.match(/\/api\/([^?]+)/)?.[1] || 'unknown';
+            console.log(`  📡 API hit: ${apiPath} (status: ${response.status()})`);
+        }
         if (url.includes('tiktok.com/api') && url.includes('/post/item_list') && !url.includes('repost')) {
             try {
                 const apiPath = url.match(/\/api\/([^?]+)/)?.[1] || 'unknown';
@@ -99,13 +104,17 @@ async function scrapeVideos(username) {
                         ownVideos.set(v.id, v);
                     });
                     console.log(`  [${apiPath}] +${json.itemList.length} (own: ${ownVideos.size})`);
+                } else {
+                    console.log(`  [${apiPath}] empty response (hasMore: ${json.hasMore}, cursor: ${json.cursor})`);
                 }
                 apiEndpoints.set(apiPath, {
                     url,
                     hasMore: !!json.hasMore,
                     cursor: json.cursor || '0',
                 });
-            } catch (e) { }
+            } catch (e) {
+                console.log(`  ⚠️ API parse error: ${e.message}`);
+            }
         }
     });
 
