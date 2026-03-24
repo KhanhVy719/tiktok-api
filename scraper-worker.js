@@ -47,7 +47,7 @@ async function scrapeAttempt(username, profileSecUid, attemptNum) {
         // Response listener
         page.on('response', async (response) => {
             const url = response.url();
-            if (url.includes('tiktok.com/api') && url.includes('/post/item_list') && !url.includes('repost')) {
+            if (url.includes('tiktok.com/api') && url.includes('item_list')) {
                 try {
                     const text = await response.text();
                     if (text.length > 10) {
