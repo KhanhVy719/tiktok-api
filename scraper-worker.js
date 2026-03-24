@@ -12,53 +12,13 @@ const SCRAPE_INTERVAL = 5 * 60 * 1000; // 5 phút
 process.on('uncaughtException', (err) => console.error('Uncaught:', err.message));
 process.on('unhandledRejection', (err) => console.error('Unhandled:', err?.message || err));
 
-// === External API: api.douyin.wtf ===
-const EXTERNAL_API = 'https://api.douyin.wtf';
-
-async function fetchFromExternalAPI(username) {
-    try {
-        console.log(`  [External API] Lấy secUid cho @${username}...`);
-        const secRes = await fetch(`${EXTERNAL_API}/api/tiktok/web/get_sec_user_id?url=https://www.tiktok.com/@${username}`);
-        const secData = await secRes.json();
-        if (secData.code !== 200 || !secData.data) return null;
-        const secUid = secData.data;
-        console.log(`  [External API] secUid: ${secUid.slice(0, 30)}...`);
-
-        const allItems = [];
-        let cursor = 0;
-        for (let page = 0; page < 10; page++) {
-            const postRes = await fetch(`${EXTERNAL_API}/api/tiktok/web/fetch_user_post?secUid=${encodeURIComponent(secUid)}&cursor=${cursor}&count=35`);
-            if (!postRes.ok) {
-                console.log(`  [External API] fetch_user_post lỗi: ${postRes.status}`);
-                break;
-            }
-            const postData = await postRes.json();
-            if (postData.code !== 200 || !postData.data) break;
-
-            const itemList = postData.data.itemList || postData.data.items || [];
-            allItems.push(...itemList);
-            console.log(`  [External API] trang ${page}: +${itemList.length} (tổng: ${allItems.length})`);
-
-            if (!postData.data.hasMore) break;
-            cursor = postData.data.cursor || 0;
-        }
-
-        if (allItems.length === 0) return null;
-        console.log(`  [External API] Tổng: ${allItems.length} items`);
-        return allItems;
-    } catch (e) {
-        console.log(`  [External API] Lỗi: ${e.message}`);
-        return null;
-    }
-}
-
 // === Puppeteer ===
 let browserInstance = null;
 
 async function getBrowser() {
     if (!browserInstance || !browserInstance.connected) {
         const launchOptions = {
-            headless: false, // Dùng Xvfb virtual display thay vì headless
+            headless: false, // Dùng Xvfb virtual display
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -66,6 +26,8 @@ async function getBrowser() {
                 '--disable-gpu',
                 '--window-size=1280,900',
                 '--start-maximized',
+                '--lang=vi-VN,vi',
+                '--disable-blink-features=AutomationControlled',
             ]
         };
         if (process.env.PUPPETEER_EXECUTABLE_PATH) {
@@ -77,29 +39,33 @@ async function getBrowser() {
     return browserInstance;
 }
 
+// === Helper: random delay ===
+const delay = (ms) => new Promise(r => setTimeout(r, ms));
+const randomDelay = (min, max) => delay(min + Math.random() * (max - min));
+
+// === Helper: simulate human scrolling ===
+async function humanScroll(page, scrolls = 3) {
+    for (let i = 0; i < scrolls; i++) {
+        await page.evaluate(() => window.scrollBy(0, 300 + Math.random() * 400));
+        await randomDelay(800, 1500);
+    }
+}
+
+// === Main scraper ===
 async function scrapeVideos(username, profileSecUid) {
-    console.log('  [Scraper] Bắt đầu lấy videos gốc...');
+    console.log(`  [Puppeteer] Bắt đầu scrape videos gốc... (secUid: ${profileSecUid ? 'YES' : 'NONE'})`);
     const ownVideos = new Map();
 
-    // === 1. External API: nguồn dữ liệu chính (không phụ thuộc VPS IP) ===
-    console.log('  📡 [External API] Lấy video list...');
-    const externalItems = await fetchFromExternalAPI(username);
-    if (externalItems && externalItems.length > 0) {
-        externalItems.forEach(v => {
-            v._source = 'own';
-            ownVideos.set(v.id, v);
-        });
-        console.log(`  ✅ [External API] ${ownVideos.size} videos`);
-    } else {
-        console.log('  ⚠️ [External API] Không lấy được data');
-    }
-
-    // === 2. Puppeteer: lấy cookies + extra IDs ===
     const browser = await getBrowser();
     const page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
+    
+    // Set extra headers for realism
+    await page.setExtraHTTPHeaders({
+        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+    });
 
-    // Bonus: bắt thêm videos nếu response listener nhận được
+    // === Strategy A: Response listener (bắt API responses) ===
     page.on('response', async (response) => {
         const url = response.url();
         if (url.includes('tiktok.com/api') && url.includes('/post/item_list') && !url.includes('repost')) {
@@ -109,7 +75,7 @@ async function scrapeVideos(username, profileSecUid) {
                     const json = JSON.parse(text);
                     if (json.itemList && json.itemList.length > 0) {
                         json.itemList.forEach(v => { v._source = 'own'; ownVideos.set(v.id, v); });
-                        console.log(`  [Puppeteer bonus] +${json.itemList.length} (total: ${ownVideos.size})`);
+                        console.log(`  [Strategy A: Response] +${json.itemList.length} (total: ${ownVideos.size})`);
                     }
                 }
             } catch (e) { }
@@ -120,10 +86,143 @@ async function scrapeVideos(username, profileSecUid) {
     await page.goto(`https://www.tiktok.com/@${username}`, {
         waitUntil: 'networkidle2', timeout: 30000
     });
-    try { const btn = await page.$('button[data-e2e="cookie-banner-accept"]'); if (btn) await btn.click(); } catch (e) {}
-    await new Promise(r => setTimeout(r, 3000));
 
-    // Extra IDs via page navigation
+    // Accept cookie banner
+    try { const btn = await page.$('button[data-e2e="cookie-banner-accept"]'); if (btn) await btn.click(); } catch (e) {}
+    await randomDelay(2000, 3000);
+
+    // Click Videos tab
+    try {
+        const videoTab = await page.$('p[data-e2e="videos-tab"]');
+        if (videoTab) {
+            await videoTab.click();
+            console.log('  📹 Clicked tab Videos');
+            await randomDelay(3000, 5000);
+        }
+    } catch (e) {}
+
+    // Simulate human scrolling to trigger lazy loading
+    await humanScroll(page, 5);
+    await randomDelay(2000, 3000);
+
+    // === Strategy B: In-page fetch with secUid (gọi API từ browser context) ===
+    if (ownVideos.size === 0 && profileSecUid) {
+        console.log('  📡 [Strategy B: In-page fetch] Thử gọi post/item_list...');
+        let cursor = 0;
+        for (let pn = 0; pn < 3; pn++) {
+            try {
+                const apiResult = await page.evaluate(async (suid, cur) => {
+                    try {
+                        const r = await fetch(`/api/post/item_list/?aid=1988&count=35&cursor=${cur}&secUid=${encodeURIComponent(suid)}&cookie_enabled=true&device_platform=web_pc`, {
+                            credentials: 'include',
+                            headers: { 'Accept': 'application/json' }
+                        });
+                        const text = await r.text();
+                        if (text.length < 10) return { items: [], hasMore: false, error: 'empty response' };
+                        const d = JSON.parse(text);
+                        return { items: d.itemList || [], hasMore: !!d.hasMore, cursor: d.cursor || '0' };
+                    } catch (e) { return { items: [], hasMore: false, error: e.message }; }
+                }, profileSecUid, cursor);
+
+                if (apiResult.error) {
+                    console.log(`    ⚠️ In-page fetch: ${apiResult.error}`);
+                    break;
+                }
+                if (apiResult.items.length > 0) {
+                    apiResult.items.forEach(v => { v._source = 'own'; ownVideos.set(v.id, v); });
+                    console.log(`    [In-page] +${apiResult.items.length} (own: ${ownVideos.size})`);
+                }
+                if (!apiResult.hasMore) break;
+                cursor = apiResult.cursor;
+            } catch (e) { console.log(`    ❌ In-page error: ${e.message}`); break; }
+        }
+    }
+
+    // === Strategy C: DOM extraction (lấy video từ DOM đã render) ===
+    if (ownVideos.size === 0) {
+        console.log('  🔍 [Strategy C: DOM extraction] Lấy video từ trang...');
+        
+        // Scroll thêm để load hết
+        await humanScroll(page, 3);
+        await randomDelay(1000, 2000);
+
+        const domVideos = await page.evaluate((un) => {
+            const results = [];
+            // Cách 1: Lấy từ video card links
+            const links = document.querySelectorAll('a[href*="/@' + un + '/video/"], a[href*="/@' + un + '/photo/"]');
+            links.forEach(link => {
+                const href = link.getAttribute('href') || '';
+                const match = href.match(/\/(video|photo)\/(\d+)/);
+                if (match) {
+                    const id = match[2];
+                    const type = match[1];
+                    // Lấy cover image
+                    const img = link.querySelector('img');
+                    const cover = img ? img.src : '';
+                    // Lấy description
+                    const descEl = link.closest('[class*="ItemContainer"]')?.querySelector('[class*="ItemCaption"], [class*="video-caption"]');
+                    const desc = descEl ? descEl.textContent : '';
+                    results.push({ id, type, cover, desc });
+                }
+            });
+            
+            // Cách 2: Lấy từ data-e2e video items
+            if (results.length === 0) {
+                const items = document.querySelectorAll('[data-e2e="user-post-item"], [data-e2e="user-post-item-list"] a');
+                items.forEach(item => {
+                    const link = item.tagName === 'A' ? item : item.querySelector('a');
+                    if (!link) return;
+                    const href = link.getAttribute('href') || '';
+                    const match = href.match(/\/(video|photo)\/(\d+)/);
+                    if (match) {
+                        const img = item.querySelector('img');
+                        results.push({
+                            id: match[2],
+                            type: match[1],
+                            cover: img ? img.src : '',
+                            desc: ''
+                        });
+                    }
+                });
+            }
+            
+            return results;
+        }, username);
+
+        if (domVideos.length > 0) {
+            console.log(`    📋 Tìm thấy ${domVideos.length} video IDs từ DOM`);
+            // Dùng page navigation để lấy full data cho mỗi video
+            for (const dv of domVideos) {
+                if (ownVideos.has(dv.id)) continue;
+                try {
+                    const urlType = dv.type === 'photo' ? 'photo' : 'video';
+                    await page.goto(`https://www.tiktok.com/@${username}/${urlType}/${dv.id}`, {
+                        waitUntil: 'networkidle2', timeout: 15000
+                    });
+                    await randomDelay(1500, 2500);
+                    const postData = await page.evaluate(() => {
+                        try {
+                            const root = window.__UNIVERSAL_DATA_FOR_REHYDRATION__;
+                            const scope = root?.['__DEFAULT_SCOPE__'];
+                            const detail = scope?.['webapp.video-detail'];
+                            return detail?.itemInfo?.itemStruct || detail?.itemStruct || null;
+                        } catch { return null; }
+                    });
+                    if (postData) {
+                        postData._source = 'own';
+                        ownVideos.set(dv.id, postData);
+                        console.log(`    ✅ ${dv.id}: "${(postData.desc || '').slice(0, 40)}"`);
+                    } else {
+                        console.log(`    ⚠️ ${dv.id}: no SSR data`);
+                    }
+                } catch (e) { console.log(`    ❌ ${dv.id}: ${e.message}`); }
+            }
+        } else {
+            console.log('    ⚠️ DOM extraction: không tìm thấy video links');
+        }
+    }
+
+    // === Extra IDs (các video/photo cụ thể cần lấy) ===
     const EXTRA_IDS = (process.env.EXTRA_VIDEO_IDS || '').split(',').filter(Boolean);
     const missingIds = EXTRA_IDS.filter(id => !ownVideos.has(id));
     if (missingIds.length > 0) {
@@ -132,8 +231,10 @@ async function scrapeVideos(username, profileSecUid) {
             try {
                 let postData = null;
                 for (const type of ['video', 'photo']) {
-                    await page.goto(`https://www.tiktok.com/@${username}/${type}/${postId}`, { waitUntil: 'networkidle2', timeout: 15000 });
-                    await new Promise(r => setTimeout(r, 2000));
+                    await page.goto(`https://www.tiktok.com/@${username}/${type}/${postId}`, {
+                        waitUntil: 'networkidle2', timeout: 15000
+                    });
+                    await randomDelay(1500, 2500);
                     postData = await page.evaluate(() => {
                         try {
                             const root = window.__UNIVERSAL_DATA_FOR_REHYDRATION__;
@@ -147,7 +248,8 @@ async function scrapeVideos(username, profileSecUid) {
                 if (postData) {
                     postData._source = 'own';
                     ownVideos.set(postId, postData);
-                    console.log(`    ✅ ${postId}: "${(postData.desc || '').slice(0, 40)}"`);
+                    const type = postData.imagePost ? 'photo' : 'video';
+                    console.log(`    ✅ ${postId} (${type}): "${(postData.desc || '').slice(0, 40)}"`);
                 } else {
                     console.log(`    ⚠️ ${postId}: no SSR data`);
                 }
@@ -166,9 +268,11 @@ async function scrapeVideos(username, profileSecUid) {
     return {
         videos: formatItems(ownVideos, username),
         cookies: cookieStr,
-        source: 'external-api+puppeteer'
+        source: 'puppeteer'
     };
 }
+
+// === Format video/image items ===
 function formatItems(videoMap, username) {
     const extractUrl = (field) => {
         if (!field) return '';
@@ -198,7 +302,7 @@ function formatItems(videoMap, username) {
         return {
             id: v.id,
             type: isImagePost ? 'image_diary' : 'video',
-            source: v._source || 'unknown', // 'own' = video gốc, 'repost' = đăng lại
+            source: v._source || 'unknown',
             desc: v.desc || '',
             createTime: v.createTime,
             duration: v.video?.duration || 0,
@@ -256,7 +360,7 @@ async function runScrape() {
     let videos = [];
     let cookies = '';
 
-    // 1. Lấy profile
+    // 1. Lấy profile + secUid
     try {
         const result = await StalkUser(DEFAULT_USERNAME);
         if (result.status !== 'error') {
@@ -278,7 +382,7 @@ async function runScrape() {
                     friends: r?.stats?.friendCount,
                 },
             };
-            console.log(`  ✅ Profile: ${profile.nickname} (${profile.stats.followers} followers)`);
+            console.log(`  ✅ Profile: ${profile.nickname} (${profile.stats.followers} followers, secUid: ${profile.secUid ? 'YES' : 'NO'})`);
         }
     } catch (err) {
         console.error(`  ❌ Profile lỗi: ${err.message}`);
@@ -298,7 +402,6 @@ async function runScrape() {
     if (videos.length > 0) {
         await pushToApiServer(profile, videos, cookies);
     } else if (cookies) {
-        // Push cookies + profile mà không overwrite videos cũ
         await pushToApiServer(profile, null, cookies);
         console.log('  ℹ️ Push cookies/profile only (giữ videos cũ trên server)');
     } else {
