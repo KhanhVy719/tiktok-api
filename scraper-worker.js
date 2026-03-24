@@ -78,31 +78,27 @@ async function getBrowser() {
 }
 
 async function scrapeVideos(username) {
-    // Luôn dùng Puppeteer để lấy CẢ Videos tab (own) + Reposts tab
-    // External API chỉ trả về reposts, không có videos gốc
-    console.log('  [Puppeteer] Bắt đầu scrape cả 2 tab...');
+    // Chỉ lấy videos gốc (own videos), bỏ reposts
+    console.log('  [Puppeteer] Bắt đầu scrape videos gốc...');
     const browser = await getBrowser();
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    const ownVideos = new Map();  // từ /api/post/item_list/
-    const repostVideos = new Map(); // từ /api/repost/item_list/
+    const ownVideos = new Map();
     const apiEndpoints = new Map();
 
     page.on('response', async (response) => {
         const url = response.url();
-        if (url.includes('tiktok.com/api') && url.includes('item_list')) {
+        if (url.includes('tiktok.com/api') && url.includes('item_list') && !url.includes('repost')) {
             try {
                 const apiPath = url.match(/\/api\/([^?]+)/)?.[1] || 'unknown';
                 const json = await response.json();
                 if (json.itemList && json.itemList.length > 0) {
-                    const isRepost = apiPath.includes('repost');
-                    const targetMap = isRepost ? repostVideos : ownVideos;
                     json.itemList.forEach(v => {
-                        v._source = isRepost ? 'repost' : 'own';
-                        targetMap.set(v.id, v);
+                        v._source = 'own';
+                        ownVideos.set(v.id, v);
                     });
-                    console.log(`  [${apiPath}] +${json.itemList.length} (own: ${ownVideos.size}, reposts: ${repostVideos.size})`);
+                    console.log(`  [${apiPath}] +${json.itemList.length} (own: ${ownVideos.size})`);
                 }
                 apiEndpoints.set(apiPath, {
                     url,
@@ -193,7 +189,7 @@ async function scrapeVideos(username) {
     // Navigate tới từng video page để lấy data (cho extra IDs + missing videos)
     const EXTRA_IDS = (process.env.EXTRA_VIDEO_IDS || '').split(',').filter(Boolean);
     const allKnownIds = [...new Set([...EXTRA_IDS])];
-    const missingIds = allKnownIds.filter(id => !ownVideos.has(id) && !repostVideos.has(id));
+    const missingIds = allKnownIds.filter(id => !ownVideos.has(id));
 
     if (missingIds.length > 0) {
         console.log(`  🎯 Fetching ${missingIds.length} extra videos qua page navigation...`);
@@ -234,13 +230,13 @@ async function scrapeVideos(username) {
 
     console.log(`  ✅ Videos tab xong: ${ownVideos.size} videos gốc`);
 
-    // Phân trang cho post/item_list (own videos) nếu có
+    // Phân trang cho post/item_list nếu có
     for (const [apiPath, state] of apiEndpoints) {
-        if (!state.hasMore || apiPath.includes('repost')) continue;
+        if (!state.hasMore) continue;
         let { url: templateUrl, cursor } = state;
         console.log(`  Phân trang ${apiPath} (cursor=${cursor})...`);
 
-        for (let i = 0; i < 20; i++) {
+        for (let i = 0; i < 10; i++) {
             try {
                 const nextUrl = templateUrl.replace(/cursor=\d+/, `cursor=${cursor}`);
                 const moreData = await page.evaluate(async (fetchUrl) => {
@@ -253,69 +249,15 @@ async function scrapeVideos(username) {
                         v._source = 'own';
                         ownVideos.set(v.id, v);
                     });
-                    console.log(`  [${apiPath}] cursor +${moreData.itemList.length} (own total: ${ownVideos.size})`);
+                    console.log(`  [${apiPath}] +${moreData.itemList.length} (own total: ${ownVideos.size})`);
                 }
                 if (!moreData.hasMore) break;
                 cursor = moreData.cursor || '0';
-            } catch (e) {
-                console.log(`  ${apiPath} lỗi phân trang:`, e.message);
-                break;
-            }
+            } catch (e) { break; }
         }
     }
 
-    console.log(`  ✅ Videos tab xong: ${ownVideos.size} videos gốc`);
-
-    // === 2. Tab REPOSTS ===
-    try {
-        const repostTab = await page.$('p[data-e2e="repost-tab"]');
-        if (repostTab) {
-            await repostTab.click();
-            console.log('  🔄 Clicked tab Reposts');
-            await new Promise(r => setTimeout(r, 3000));
-
-            // Cuộn để load reposts
-            for (let i = 0; i < 5; i++) {
-                await page.evaluate(() => window.scrollBy(0, 800));
-                await new Promise(r => setTimeout(r, 1500));
-            }
-            console.log(`  Sau cuộn Reposts tab: own=${ownVideos.size}, reposts=${repostVideos.size}`);
-
-            // Phân trang reposts
-            for (const [apiPath, state] of apiEndpoints) {
-                if (!state.hasMore || !apiPath.includes('repost')) continue;
-                let { url: templateUrl, cursor } = state;
-                for (let i = 0; i < 20; i++) {
-                    try {
-                        const nextUrl = templateUrl.replace(/cursor=\d+/, `cursor=${cursor}`);
-                        const moreData = await page.evaluate(async (fetchUrl) => {
-                            const r = await fetch(fetchUrl, { credentials: 'include' });
-                            return r.json();
-                        }, nextUrl);
-
-                        if (moreData.itemList && moreData.itemList.length > 0) {
-                            moreData.itemList.forEach(v => {
-                                v._source = 'repost';
-                                repostVideos.set(v.id, v);
-                            });
-                            console.log(`  [${apiPath}] repost cursor +${moreData.itemList.length} (repost total: ${repostVideos.size})`);
-                        }
-                        if (!moreData.hasMore) break;
-                        cursor = moreData.cursor || '0';
-                    } catch (e) { break; }
-                }
-            }
-        } else {
-            console.log('  ℹ️ Không tìm thấy tab Reposts');
-        }
-    } catch (e) {
-        console.log('  ⚠️ Lỗi tab Reposts:', e.message);
-    }
-
-    console.log(`  📊 Tổng cuối: own=${ownVideos.size}, reposts=${repostVideos.size}, total=${ownVideos.size + repostVideos.size}`);
-
-    // Gộp tất cả (own videos first, then reposts)
-    const allVideos = new Map([...ownVideos, ...repostVideos]);
+    console.log(`  📊 Tổng: ${ownVideos.size} videos gốc`);
 
     // Lưu cookies cho CDN proxy
     const cookies = await page.cookies();
@@ -325,7 +267,7 @@ async function scrapeVideos(username) {
     await page.close();
 
     return {
-        videos: formatItems(allVideos, username),
+        videos: formatItems(ownVideos, username),
         cookies: cookieStr,
         source: 'puppeteer'
     };
